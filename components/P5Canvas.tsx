@@ -4,97 +4,108 @@ import { DetectedObject } from '../types';
 
 interface P5CanvasProps {
   objects: DetectedObject[];
-  videoElement: HTMLVideoElement | null;
 }
 
-const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement }) => {
+const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
   const p5Instance = useRef<any>(null);
   const objectsRef = useRef<DetectedObject[]>(objects);
-  const videoRef = useRef<HTMLVideoElement | null>(videoElement);
-  const stateRef = useRef<Map<string, {x: number, y: number, active: boolean, lastSeen: number}>>(new Map());
+  const stateRef = useRef<Map<string, {x: number, y: number, type: string, active: boolean, lastSeen: number, confidence: number}>>(new Map());
 
+  // Update logic to keep track of objects and their smooth transitions
   useEffect(() => {
     objectsRef.current = objects;
     const now = Date.now();
     objects.forEach(obj => {
-      // Wir spiegeln die X-Koordinate: Gemini liefert 0-1 (un-mirrored), wir brauchen (1-x) für den gespiegelten Feed
-      const mirroredX = 1 - obj.x;
+      // Mirroring happens in p5 draw loop via scale
       if (!stateRef.current.has(obj.id)) {
-        stateRef.current.set(obj.id, { x: mirroredX, y: obj.y, active: true, lastSeen: now });
+        stateRef.current.set(obj.id, { 
+          x: obj.x, 
+          y: obj.y, 
+          type: obj.type,
+          active: true, 
+          lastSeen: now,
+          confidence: obj.confidence
+        });
       } else {
         const s = stateRef.current.get(obj.id)!;
         s.active = true;
-        s.x = mirroredX;
+        s.x = obj.x;
         s.y = obj.y;
+        s.type = obj.type;
+        s.confidence = obj.confidence;
         s.lastSeen = now;
       }
     });
   }, [objects]);
 
   useEffect(() => {
-    videoRef.current = videoElement;
-  }, [videoElement]);
-
-  useEffect(() => {
     const sketch = (p: any) => {
-      const LINE_SPACING = 30; 
-      const FORCE_RADIUS = 250; 
+      let capture: any;
+      const LINE_SPACING = 35;
+      const FORCE_RADIUS = 250;
 
       p.setup = () => {
         const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
         canvas.parent('p5-container');
+        
+        // Use native p5 capture for better reliability on Raspberry Pi
+        capture = p.createCapture(p.VIDEO);
+        capture.size(640, 480);
+        capture.hide(); // Hide the raw dom element
+        
         p.colorMode(p.HSB, 360, 100, 100, 1);
+        p.textFont('monospace');
       };
 
       p.draw = () => {
         p.background(0);
 
-        // 1. LIVE FEED ZEICHNEN (GESPIEGELT)
-        // Wir zeichnen das Video direkt ins Canvas, damit es keine Verzögerung gibt.
-        if (videoRef.current && videoRef.current.readyState >= 2) {
+        // 1. RENDER CAMERA FEED (MIRRORED BACKGROUND)
+        if (capture && capture.loadedmetadata) {
           p.push();
           p.translate(p.width, 0);
-          p.scale(-1, 1); // Spiegelung im Canvas
+          p.scale(-1, 1);
           
-          let vW = videoRef.current.videoWidth;
-          let vH = videoRef.current.videoHeight;
+          let vW = capture.width;
+          let vH = capture.height;
           let scale = Math.max(p.width / vW, p.height / vH);
           let nW = vW * scale;
           let nH = vH * scale;
           let offX = (p.width - nW) / 2;
           let offY = (p.height - nH) / 2;
           
-          p.tint(255, 0.5); // 50% Deckkraft
-          p.image(videoRef.current, offX, offY, nW, nH);
+          p.tint(255, 0.35); // Dim background for UI visibility
+          p.image(capture, offX, offY, nW, nH);
           p.pop();
         }
 
         const now = Date.now();
         const targetObjects = objectsRef.current;
 
-        // 2. OBJEKT-INTERPOLATION
+        // 2. INTERPOLATE STATES & CLEANUP
         stateRef.current.forEach((val, id) => {
           const target = targetObjects.find(o => o.id === id);
           if (target) {
-            const mx = 1 - target.x;
-            val.x = p.lerp(val.x, mx, 0.1); 
-            val.y = p.lerp(val.y, target.y, 0.1);
-          } else if (now - val.lastSeen > 4000) {
+            val.x = p.lerp(val.x, target.x, 0.15); 
+            val.y = p.lerp(val.y, target.y, 0.15);
+            val.lastSeen = now;
+          } else if (now - val.lastSeen > 2000) {
             stateRef.current.delete(id);
           }
         });
 
-        // 3. INTERAKTIVE ANIMATION
+        // 3. DRAW DYNAMIC GRID
         p.noFill();
-        for (let y = 0; y <= p.height; y += LINE_SPACING) {
+        for (let y = 0; y <= p.height + LINE_SPACING; y += LINE_SPACING) {
           p.beginShape();
-          for (let x = 0; x <= p.width; x += 40) {
+          for (let x = -50; x <= p.width + 50; x += 60) {
             let dxTotal = 0;
             let dyTotal = 0;
             let combinedStrength = 0;
 
             stateRef.current.forEach((obj) => {
-              const ox = obj.x * p.width;
+              // Note: We mirror the X for visual alignment with the mirrored video
+              const ox = (1 - obj.x) * p.width;
               const oy = obj.y * p.height;
               const dX = x - ox;
               const dY = y - oy;
@@ -102,32 +113,73 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement }) => {
 
               if (distance < FORCE_RADIUS) {
                 const s = p.map(distance, 0, FORCE_RADIUS, 1, 0);
-                const angle = p.atan2(dY, dX);
                 const push = p.pow(s, 2) * 60;
+                const angle = p.atan2(dY, dX);
                 dxTotal += p.cos(angle) * push;
                 dyTotal += p.sin(angle) * push;
                 combinedStrength += s;
               }
             });
 
-            const h = p.lerp(190, 260, p.min(combinedStrength, 1));
-            const op = p.map(p.min(combinedStrength, 1), 0, 1, 0.2, 0.9);
-            p.stroke(h, 80, 100, op);
-            p.strokeWeight(p.map(combinedStrength, 0, 1, 1, 5));
+            const hue = p.lerp(200, 280, p.constrain(combinedStrength, 0, 1));
+            const opacity = p.map(p.constrain(combinedStrength, 0, 1), 0, 1, 0.1, 0.6);
+            
+            p.stroke(hue, 80, 100, opacity);
+            p.strokeWeight(p.map(p.constrain(combinedStrength, 0, 1), 0, 1, 0.5, 2));
             p.curveVertex(x + dxTotal, y + dyTotal);
           }
           p.endShape();
         }
 
-        // 4. VISUELLE MARKER
+        // 4. DRAW OBJECT INDICATORS (Bounding Boxes & Labels)
         stateRef.current.forEach((obj) => {
-          const ox = obj.x * p.width;
+          const ox = (1 - obj.x) * p.width;
           const oy = obj.y * p.height;
+          const pulse = p.sin(p.frameCount * 0.1) * 5;
+          const size = 120 + pulse;
+
+          p.push();
+          p.translate(ox, oy);
+          
+          // Outer Glow
+          p.noFill();
+          p.stroke(210, 80, 100, 0.4);
+          p.strokeWeight(1);
+          p.rect(-size/2, -size/2, size, size, 15);
+          
+          // Corner Markers
+          p.stroke(210, 80, 100, 0.8);
+          p.strokeWeight(3);
+          const cs = 15; // corner size
+          // Top Left
+          p.line(-size/2, -size/2, -size/2 + cs, -size/2);
+          p.line(-size/2, -size/2, -size/2, -size/2 + cs);
+          // Top Right
+          p.line(size/2, -size/2, size/2 - cs, -size/2);
+          p.line(size/2, -size/2, size/2, -size/2 + cs);
+          // Bottom Left
+          p.line(-size/2, size/2, -size/2 + cs, size/2);
+          p.line(-size/2, size/2, -size/2, size/2 - cs);
+          // Bottom Right
+          p.line(size/2, size/2, size/2 - cs, size/2);
+          p.line(size/2, size/2, size/2, size/2 - cs);
+
+          // Label
+          p.fill(210, 80, 100, 0.9);
           p.noStroke();
-          p.fill(200, 100, 100, 0.2);
-          p.circle(ox, oy, 60);
-          p.fill(200, 100, 100, 0.5);
-          p.circle(ox, oy, 15);
+          p.rect(-size/2, -size/2 - 25, p.textWidth(obj.type.toUpperCase()) + 20, 20, 5);
+          p.fill(0);
+          p.textSize(10);
+          p.textStyle(p.BOLD);
+          p.text(obj.type.toUpperCase(), -size/2 + 10, -size/2 - 11);
+
+          // Confidence Bar
+          p.stroke(210, 80, 100, 0.3);
+          p.line(-size/2, size/2 + 10, size/2, size/2 + 10);
+          p.stroke(210, 80, 100, 1);
+          p.line(-size/2, size/2 + 10, -size/2 + (size * obj.confidence), size/2 + 10);
+
+          p.pop();
         });
       };
 
@@ -138,7 +190,7 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement }) => {
 
     p5Instance.current = new (window as any).p5(sketch);
     return () => p5Instance.current?.remove();
-  }, []);
+  }, []); // Only init once, p5 handles its own capture
 
   return null;
 };
