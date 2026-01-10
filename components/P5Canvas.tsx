@@ -4,110 +4,130 @@ import { DetectedObject } from '../types';
 
 interface P5CanvasProps {
   objects: DetectedObject[];
+  videoElement: HTMLVideoElement | null;
 }
 
-const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
+const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement }) => {
   const p5Instance = useRef<any>(null);
   const objectsRef = useRef<DetectedObject[]>(objects);
-  // Ref für flüssige Bewegungs-Interpolation (Lerp)
-  const smoothedObjects = useRef<Map<string, {x: number, y: number}>>(new Map());
+  const videoRef = useRef<HTMLVideoElement | null>(videoElement);
+  const stateRef = useRef<Map<string, {x: number, y: number, active: boolean, lastSeen: number}>>(new Map());
 
   useEffect(() => {
     objectsRef.current = objects;
+    const now = Date.now();
+    objects.forEach(obj => {
+      // Wir spiegeln die X-Koordinate: Gemini liefert 0-1 (un-mirrored), wir brauchen (1-x) für den gespiegelten Feed
+      const mirroredX = 1 - obj.x;
+      if (!stateRef.current.has(obj.id)) {
+        stateRef.current.set(obj.id, { x: mirroredX, y: obj.y, active: true, lastSeen: now });
+      } else {
+        const s = stateRef.current.get(obj.id)!;
+        s.active = true;
+        s.x = mirroredX;
+        s.y = obj.y;
+        s.lastSeen = now;
+      }
+    });
   }, [objects]);
 
   useEffect(() => {
+    videoRef.current = videoElement;
+  }, [videoElement]);
+
+  useEffect(() => {
     const sketch = (p: any) => {
-      const LINE_SPACING = 20; // Abstand zwischen den horizontalen Linien
-      const RESOLUTION = 10;   // Detailgrad der Linien-Segmente (niedriger = feiner)
-      const FORCE_RADIUS = 180; // Einflussbereich der Objekte auf die Linien
+      const LINE_SPACING = 30; 
+      const FORCE_RADIUS = 250; 
 
       p.setup = () => {
         const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
         canvas.parent('p5-container');
         p.colorMode(p.HSB, 360, 100, 100, 1);
-        p.noFill();
       };
 
       p.draw = () => {
-        p.background(0); // Kein Motion Blur hier für schärfere Linien
+        p.background(0);
 
-        const targetObjects = objectsRef.current;
-        
-        // 1. Interpolation der Positionen für smoothe Bewegungen
-        targetObjects.forEach(target => {
-          if (!smoothedObjects.current.has(target.id)) {
-            smoothedObjects.current.set(target.id, { x: target.x, y: target.y });
-          }
-          const current = smoothedObjects.current.get(target.id)!;
-          current.x = p.lerp(current.x, target.x, 0.1);
-          current.y = p.lerp(current.y, target.y, 0.1);
-        });
-
-        // Bereinige alte Objekte (einfache Logik: wenn nicht in targetObjects, löschen)
-        // In einer Produktion-App würde man hier ein Timeout nutzen
-        if (targetObjects.length === 0) {
-          smoothedObjects.current.clear();
+        // 1. LIVE FEED ZEICHNEN (GESPIEGELT)
+        // Wir zeichnen das Video direkt ins Canvas, damit es keine Verzögerung gibt.
+        if (videoRef.current && videoRef.current.readyState >= 2) {
+          p.push();
+          p.translate(p.width, 0);
+          p.scale(-1, 1); // Spiegelung im Canvas
+          
+          let vW = videoRef.current.videoWidth;
+          let vH = videoRef.current.videoHeight;
+          let scale = Math.max(p.width / vW, p.height / vH);
+          let nW = vW * scale;
+          let nH = vH * scale;
+          let offX = (p.width - nW) / 2;
+          let offY = (p.height - nH) / 2;
+          
+          p.tint(255, 0.5); // 50% Deckkraft
+          p.image(videoRef.current, offX, offY, nW, nH);
+          p.pop();
         }
 
-        // 2. Zeichnen des Linien-Systems
+        const now = Date.now();
+        const targetObjects = objectsRef.current;
+
+        // 2. OBJEKT-INTERPOLATION
+        stateRef.current.forEach((val, id) => {
+          const target = targetObjects.find(o => o.id === id);
+          if (target) {
+            const mx = 1 - target.x;
+            val.x = p.lerp(val.x, mx, 0.1); 
+            val.y = p.lerp(val.y, target.y, 0.1);
+          } else if (now - val.lastSeen > 4000) {
+            stateRef.current.delete(id);
+          }
+        });
+
+        // 3. INTERAKTIVE ANIMATION
+        p.noFill();
         for (let y = 0; y <= p.height; y += LINE_SPACING) {
           p.beginShape();
-          
-          // Farbe der Linie
-          p.stroke(200, 70, 60, 0.4); 
-          p.strokeWeight(1);
+          for (let x = 0; x <= p.width; x += 40) {
+            let dxTotal = 0;
+            let dyTotal = 0;
+            let combinedStrength = 0;
 
-          for (let x = 0; x <= p.width; x += RESOLUTION) {
-            let offsetX = 0;
-            let offsetY = 0;
-            let maxDistortion = 0;
+            stateRef.current.forEach((obj) => {
+              const ox = obj.x * p.width;
+              const oy = obj.y * p.height;
+              const dX = x - ox;
+              const dY = y - oy;
+              const distance = p.sqrt(dX*dX + dY*dY);
 
-            // Prüfe Einfluss jedes Objekts auf diesen Punkt (x, y)
-            smoothedObjects.current.forEach((objPos) => {
-              const objX = objPos.x * p.width;
-              const objY = objPos.y * p.height;
-              
-              const dx = x - objX;
-              const dy = y - objY;
-              const distSq = dx * dx + dy * dy;
-              const dist = p.sqrt(distSq);
-
-              if (dist < FORCE_RADIUS) {
-                // Berechne Abstoßungskraft (Gauß-ähnlich)
-                const strength = p.map(dist, 0, FORCE_RADIUS, 1, 0);
-                const angle = p.atan2(dy, dx);
-                
-                // Wir schieben die Linie weg vom Zentrum
-                const push = strength * 40; 
-                offsetX += p.cos(angle) * push;
-                offsetY += p.sin(angle) * push;
-                
-                if (strength > maxDistortion) maxDistortion = strength;
+              if (distance < FORCE_RADIUS) {
+                const s = p.map(distance, 0, FORCE_RADIUS, 1, 0);
+                const angle = p.atan2(dY, dX);
+                const push = p.pow(s, 2) * 60;
+                dxTotal += p.cos(angle) * push;
+                dyTotal += p.sin(angle) * push;
+                combinedStrength += s;
               }
             });
 
-            // Wenn stark verformt, mache die Linie heller/leuchtender
-            if (maxDistortion > 0.1) {
-              const hue = p.lerp(200, 180, maxDistortion);
-              p.stroke(hue, 80, 100, p.map(maxDistortion, 0, 1, 0.4, 1));
-              p.strokeWeight(p.map(maxDistortion, 0, 1, 1, 2.5));
-            }
-
-            p.curveVertex(x + offsetX, y + offsetY);
+            const h = p.lerp(190, 260, p.min(combinedStrength, 1));
+            const op = p.map(p.min(combinedStrength, 1), 0, 1, 0.2, 0.9);
+            p.stroke(h, 80, 100, op);
+            p.strokeWeight(p.map(combinedStrength, 0, 1, 1, 5));
+            p.curveVertex(x + dxTotal, y + dyTotal);
           }
           p.endShape();
         }
 
-        // 3. Optional: Kleiner Kern-Glow für die Objekte selbst
-        smoothedObjects.current.forEach((objPos) => {
-          const ox = objPos.x * p.width;
-          const oy = objPos.y * p.height;
+        // 4. VISUELLE MARKER
+        stateRef.current.forEach((obj) => {
+          const ox = obj.x * p.width;
+          const oy = obj.y * p.height;
           p.noStroke();
-          p.fill(200, 100, 100, 0.1);
-          p.circle(ox, oy, 40);
-          p.fill(200, 100, 100, 0.3);
-          p.circle(ox, oy, 10);
+          p.fill(200, 100, 100, 0.2);
+          p.circle(ox, oy, 60);
+          p.fill(200, 100, 100, 0.5);
+          p.circle(ox, oy, 15);
         });
       };
 
@@ -116,17 +136,11 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
       };
     };
 
-    // @ts-ignore
-    p5Instance.current = new window.p5(sketch);
-
-    return () => {
-      if (p5Instance.current) {
-        p5Instance.current.remove();
-      }
-    };
+    p5Instance.current = new (window as any).p5(sketch);
+    return () => p5Instance.current?.remove();
   }, []);
 
-  return null; 
+  return null;
 };
 
 export default P5Canvas;

@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, RefreshCw, Layers, Play, Pause, Terminal, Maximize, Share2, AlertCircle, CameraOff, Monitor } from 'lucide-react';
+import { RefreshCw, Play, Pause, Terminal, AlertCircle, CameraOff, Activity } from 'lucide-react';
 import { detectObjectsFromFrame } from './services/geminiService';
 import { DetectedObject } from './types';
 import P5Canvas from './components/P5Canvas';
@@ -9,94 +9,50 @@ const App: React.FC = () => {
   const [objects, setObjects] = useState<DetectedObject[]>([]);
   const [isTracking, setIsTracking] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [showUI, setShowUI] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
-  const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const displayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const requestRef = useRef<number>(null);
-
-  const renderLoop = useCallback(() => {
-    if (videoRef.current && displayCanvasRef.current) {
-      const video = videoRef.current;
-      const canvas = displayCanvasRef.current;
-      const ctx = canvas.getContext('2d', { alpha: false });
-
-      if (ctx && video.readyState >= 2) {
-        if (canvas.width !== video.videoWidth) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-        }
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      }
-    }
-    requestRef.current = requestAnimationFrame(renderLoop);
-  }, []);
 
   const setupCamera = async () => {
     setError(null);
-    setCameraReady(false);
-
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(d => d.kind === 'videoinput');
-      setAvailableDevices(videoDevices);
-
-      if (videoDevices.length === 0) {
-        setError("Hardware-Fehler: rpicam erkannt, aber Browser findet kein /dev/video Device.");
-        return;
-      }
-
-      // RPi 4 / AI Camera Optimierte Constraints
-      // Wir erzwingen 15fps, da Chromium bei 30fps auf dem Pi oft hängen bleibt
       const constraints = {
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { max: 15 },
-          // Versuche das erste verfügbare Gerät explizit zu nehmen
-          deviceId: videoDevices[0].deviceId ? { exact: videoDevices[0].deviceId } : undefined
+        video: { 
+          width: { ideal: 640 }, 
+          height: { ideal: 480 }, 
+          frameRate: { ideal: 24 } 
         }
       };
-
-      console.log("Starte Stream mit Constraints:", constraints);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        // WICHTIG: Auf dem Pi braucht play() oft einen Trigger
+        // Wichtig für Autoplay auf dem Pi
+        videoRef.current.setAttribute('autoplay', '');
+        videoRef.current.setAttribute('muted', '');
+        videoRef.current.setAttribute('playsinline', '');
+        
         await videoRef.current.play();
         setCameraReady(true);
-        if (requestRef.current) cancelAnimationFrame(requestRef.current);
-        requestRef.current = requestAnimationFrame(renderLoop);
+        console.log("Kamera erfolgreich gestartet");
       }
     } catch (e: any) {
-      console.error("Kamera Initialisierung fehlgeschlagen:", e);
-      setError(`Kamera-Fehler: ${e.message || "Unbekannter Fehler"}. Versuche 'rpicam-hello' zu schließen, falls es noch läuft.`);
+      console.error("Kamera-Fehler:", e);
+      setError(`Kamera konnte nicht gestartet werden: ${e.message}`);
     }
   };
 
   useEffect(() => {
-    (window as any).getLatestDetections = () => objects;
     setupCamera();
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      if (videoRef.current?.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [renderLoop]);
+  }, []);
 
   const captureAndDetect = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || !isTracking || isLoading) return;
+    // Falls Tracking aus ist oder wir gerade laden, nichts tun
+    if (!isTracking || isLoading || !videoRef.current || videoRef.current.readyState < 2) return;
 
     const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (video.readyState < 2) return;
+    if (!canvas) return;
 
     canvas.width = 640;
     canvas.height = 480;
@@ -104,170 +60,128 @@ const App: React.FC = () => {
     if (!ctx) return;
 
     try {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const base64Image = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
-
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      const base64Image = canvas.toDataURL('image/jpeg', 0.4).split(',')[1];
+      
       setIsLoading(true);
       const results = await detectObjectsFromFrame(base64Image);
       setObjects(results);
     } catch (err) {
-      console.error("Gemini API Error:", err);
+      console.error("Gemini Scan Fehler:", err);
     } finally {
       setIsLoading(false);
     }
   }, [isTracking, isLoading]);
 
+  // Effekt für den periodischen Scan
   useEffect(() => {
     let interval: number;
-    if (isTracking) {
-      interval = window.setInterval(captureAndDetect, 4000); // 4 Sek Interval schont die CPU des Pi 4
+    if (isTracking && cameraReady) {
+      // Initiale Ausführung sofort
+      captureAndDetect();
+      interval = window.setInterval(captureAndDetect, 4000); // Alle 4 Sekunden für Stabilität auf Pi 4
     }
-    return () => clearInterval(interval);
-  }, [isTracking, captureAndDetect]);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isTracking, cameraReady, captureAndDetect]);
 
   return (
-    <div className="relative min-h-screen bg-black text-white overflow-hidden" onClick={() => videoRef.current?.play()}>
-      <div className="absolute inset-0 z-0">
-        <P5Canvas objects={objects} />
-      </div>
+    <div className="relative w-full h-full bg-black">
+      {/* P5 Canvas steuert das gesamte Rendering inkl. Live-Video */}
+      <P5Canvas objects={objects} videoElement={videoRef.current} />
 
-      <div className={`fixed top-4 right-4 z-50 transition-all ${showUI ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-        <div className="relative border-2 border-blue-500 rounded-3xl overflow-hidden shadow-2xl bg-black w-80 h-60">
-          {!cameraReady ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 gap-4 p-6 text-center">
-              <CameraOff className="w-12 h-12 text-slate-700 mb-2" />
-              <div className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">
-                Devices: {availableDevices.length > 0 ? availableDevices.map(d => d.label || 'VideoDevice').join(', ') : 'None'}
-              </div>
-              <button 
-                onClick={setupCamera}
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-500 rounded-full text-xs font-black transition-all shadow-lg shadow-blue-900/40"
-              >
-                INITIALIZE_CORE
-              </button>
+      {/* UI Layer */}
+      <div className="relative z-10 w-full h-full flex flex-col pointer-events-none">
+        
+        <header className="p-8 flex justify-between items-center bg-gradient-to-b from-black/90 to-transparent pointer-events-auto">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20">
+              <Activity className="w-6 h-6 text-white" />
             </div>
-          ) : (
-            <canvas ref={displayCanvasRef} className="w-full h-full object-cover" />
-          )}
-          <video ref={videoRef} className="hidden" playsInline muted />
-          
-          <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-xl text-[9px] font-bold border border-white/10">
-            <div className={`w-2 h-2 rounded-full ${cameraReady ? 'bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]' : 'bg-red-500'}`} />
-            <span className="tracking-widest uppercase">Live_Feed_V4L2</span>
+            <div>
+              <h1 className="text-2xl font-black italic uppercase tracking-tighter">AI Projector</h1>
+              <div className="text-[9px] font-mono text-blue-400 tracking-[0.4em]">SYSTEM_STABLE_LINK</div>
+            </div>
           </div>
-          
-          {isLoading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-blue-900/30 backdrop-blur-sm">
-              <div className="flex flex-col items-center gap-3">
-                <RefreshCw className="w-10 h-10 animate-spin text-blue-400" />
-                <span className="text-[10px] font-black text-blue-400 tracking-[0.3em]">PROCESSING</span>
+
+          <button 
+            onClick={() => setIsTracking(!isTracking)}
+            className={`flex items-center gap-4 px-10 py-5 rounded-2xl font-black transition-all border-2 pointer-events-auto ${
+              isTracking 
+                ? 'bg-red-500/20 border-red-500 text-red-500 animate-pulse' 
+                : 'bg-blue-600 border-blue-600 text-white shadow-xl shadow-blue-900/40 hover:scale-105 active:scale-95'
+            }`}
+          >
+            {isTracking ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 fill-current" />}
+            <span className="tracking-widest uppercase">{isTracking ? 'Abort Scan' : 'Initiate Scan'}</span>
+          </button>
+        </header>
+
+        <div className="flex-1 flex justify-between p-12 items-end">
+          {/* Object List Panel */}
+          <div className="w-72 bg-black/80 border border-white/10 p-6 rounded-[2.5rem] backdrop-blur-2xl pointer-events-auto shadow-2xl">
+            <div className="flex items-center gap-2 mb-4 text-blue-500">
+              <Terminal className="w-4 h-4" />
+              <span className="text-[9px] font-black uppercase tracking-widest">Neural_Data</span>
+            </div>
+            <div className="space-y-2 max-h-[30vh] overflow-y-auto pr-2 custom-scrollbar">
+              {objects.length === 0 ? (
+                <div className="text-[10px] text-slate-500 uppercase py-8 text-center border border-white/5 rounded-2xl">
+                  {isTracking ? 'Processing...' : 'System Idle'}
+                </div>
+              ) : (
+                objects.map(obj => (
+                  <div key={obj.id} className="flex justify-between items-center p-4 bg-white/5 rounded-xl border-l-4 border-blue-500">
+                    <span className="text-xs text-white uppercase font-bold">{obj.type}</span>
+                    <span className="text-[10px] text-blue-500 font-mono">{(obj.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Kleine Info Box */}
+          <div className="p-8 bg-black/40 border border-white/5 rounded-[3rem] backdrop-blur-md pointer-events-auto">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-3">
+                <div className={`w-2 h-2 rounded-full ${cameraReady ? 'bg-green-500 animate-ping' : 'bg-red-500'}`} />
+                <span className="text-[10px] font-mono text-white/50 tracking-tighter uppercase">Cam_Source: {cameraReady ? 'Active' : 'Offline'}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className={`w-2 h-2 rounded-full ${isTracking ? 'bg-blue-500 animate-pulse' : 'bg-slate-700'}`} />
+                <span className="text-[10px] font-mono text-white/50 tracking-tighter uppercase">Processor: {isTracking ? 'Running' : 'Standby'}</span>
               </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
+
+      {/* Das Video-Element wird HIER versteckt, da p5 es im Canvas zeichnet */}
+      <video 
+        ref={videoRef} 
+        className="fixed top-[-9999px] left-[-9999px] opacity-0 pointer-events-none" 
+        autoPlay 
+        playsInline 
+        muted 
+      />
+      <canvas ref={canvasRef} className="hidden" />
 
       {error && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-6">
-          <div className="bg-slate-900 border-2 border-red-500 p-10 rounded-[3rem] max-w-lg w-full text-center shadow-[0_0_100px_rgba(239,68,68,0.2)]">
-            <AlertCircle className="w-20 h-20 text-red-500 mx-auto mb-6" />
-            <h2 className="text-3xl font-black mb-4 tracking-tighter italic uppercase text-red-500">Hardware_Conflict</h2>
-            <p className="text-slate-400 font-mono text-sm leading-relaxed mb-8">{error}</p>
-            <div className="grid grid-cols-2 gap-4">
-              <button 
-                onClick={() => window.location.reload()}
-                className="py-4 bg-slate-800 rounded-2xl font-bold hover:bg-slate-700 transition-all text-xs uppercase"
-              >
-                Restart App
-              </button>
-              <button 
-                onClick={setupCamera}
-                className="py-4 bg-red-600 rounded-2xl font-bold hover:bg-red-500 transition-all text-xs uppercase shadow-lg shadow-red-900/40"
-              >
-                Retry Link
-              </button>
-            </div>
+        <div className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center p-8">
+          <div className="bg-slate-900 border-2 border-red-500 p-12 rounded-[4rem] text-center max-w-sm">
+            <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
+            <h2 className="text-2xl font-black uppercase mb-4 text-red-500">Hardware Link Error</h2>
+            <p className="text-sm text-slate-400 font-mono mb-8">{error}</p>
+            <button onClick={() => window.location.reload()} className="w-full py-5 bg-red-600 rounded-2xl font-black uppercase">Restart Core</button>
           </div>
         </div>
       )}
 
-      {showUI && (
-        <div className="relative z-10 flex flex-col h-screen p-12 pointer-events-none">
-          <header className="flex justify-between items-start pointer-events-auto">
-            <div className="group cursor-default">
-              <div className="flex items-center gap-4 mb-2">
-                <div className="h-10 w-2 bg-blue-600 rounded-full" />
-                <h1 className="text-7xl font-black tracking-tighter italic text-white uppercase group-hover:text-blue-500 transition-colors">Vision</h1>
-              </div>
-              <div className="flex items-center gap-2 ml-6">
-                <Monitor className="w-3 h-3 text-blue-500/50" />
-                <p className="text-blue-500/50 text-[10px] font-mono tracking-[0.5em] uppercase">RPi_v4_AI_Table</p>
-              </div>
-            </div>
-
-            <button 
-              onClick={(e) => { e.stopPropagation(); setIsTracking(!isTracking); }}
-              disabled={!cameraReady}
-              className={`flex items-center gap-8 px-14 py-8 rounded-[2.5rem] font-black transition-all border-2 pointer-events-auto disabled:opacity-30 disabled:grayscale ${
-                isTracking 
-                ? 'bg-red-500/10 border-red-500 text-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' 
-                : 'bg-blue-600 border-blue-600 text-white shadow-[0_0_60px_rgba(37,99,235,0.3)] hover:scale-105 active:scale-95'
-              }`}
-            >
-              {isTracking ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 fill-current" />}
-              <span className="text-xl tracking-[0.3em] uppercase">{isTracking ? 'Abort' : 'Engage'}</span>
-            </button>
-          </header>
-
-          <main className="mt-auto pointer-events-auto flex justify-between items-end">
-            <div className="w-96 bg-slate-950/60 border border-white/5 rounded-[3rem] p-10 backdrop-blur-3xl shadow-2xl relative overflow-hidden group">
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-50" />
-              <div className="flex items-center gap-4 mb-8">
-                <div className="p-2 bg-blue-500/10 rounded-lg">
-                  <Terminal className="w-5 h-5 text-blue-500" />
-                </div>
-                <span className="text-[10px] font-black text-slate-400 tracking-[0.4em] uppercase">Neural_Output</span>
-              </div>
-              <div className="space-y-5 max-h-64 overflow-y-auto pr-4 font-mono custom-scrollbar">
-                {objects.length === 0 ? (
-                  <div className="text-slate-700 py-10 text-center border-2 border-dashed border-white/5 rounded-[2rem] text-[10px] uppercase tracking-[0.2em] animate-pulse">
-                    Scanning Environment...
-                  </div>
-                ) : (
-                  objects.map(obj => (
-                    <div key={obj.id} className="group/item flex flex-col gap-2 p-4 bg-white/5 rounded-2xl hover:bg-white/10 transition-all border border-transparent hover:border-blue-500/30">
-                      <div className="flex justify-between items-center">
-                        <span className="text-blue-400 text-sm font-black uppercase tracking-wider">{obj.type}</span>
-                        <span className="text-[11px] font-bold text-slate-500">{(obj.confidence * 100).toFixed(0)}% Match</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-black/40 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-all duration-1000" 
-                          style={{ width: `${obj.confidence * 100}%` }} 
-                        />
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-            
-            <div className="flex flex-col items-end mb-4 mr-6 group">
-              <span className="text-[12rem] font-black text-white/[0.03] leading-[0.7] mb-4 select-none group-hover:text-blue-500/10 transition-colors">{objects.length}</span>
-              <div className="h-1 w-32 bg-blue-600 mb-4 rounded-full" />
-              <span className="text-xs font-black text-blue-500 tracking-[0.8em] uppercase">Live_Entities</span>
-            </div>
-          </main>
-        </div>
-      )}
-
-      <canvas ref={canvasRef} className="hidden" />
-      
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(59, 130, 246, 0.2); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.5); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #2563eb; border-radius: 10px; }
+        body { background-color: #000; }
       `}</style>
     </div>
   );
