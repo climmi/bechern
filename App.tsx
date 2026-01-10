@@ -20,19 +20,15 @@ const App: React.FC = () => {
   useEffect(() => {
     async function initAI() {
       try {
-        // Auf dem RPi ist WebGL oft instabil. Wir versuchen CPU oder WASM (falls verfügbar).
-        // Standardmäßig nutzen wir CPU für absolute Stabilität, falls WebGL schwarz wird.
+        // CPU Backend ist am sichersten gegen Black-Screens auf RPi 4
         await tf.setBackend('cpu'); 
-        console.log("TFJS Backend:", tf.getBackend());
-
         const loadedModel = await cocoSsd.load({
           base: 'lite_mobilenet_v2'
         });
         setModel(loadedModel);
         setIsLoading(false);
       } catch (err) {
-        console.error(err);
-        setError("AI Modell konnte nicht geladen werden.");
+        setError("AI Modell-Ladefehler.");
       }
     }
     initAI();
@@ -43,18 +39,22 @@ const App: React.FC = () => {
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, frameRate: 15 } // Niedrigere FPS für RPi Stabilität
+          video: { 
+            width: { ideal: 640 }, 
+            height: { ideal: 480 }, 
+            frameRate: { max: 15 } 
+          }
         });
         video.srcObject = stream;
         
-        video.onloadeddata = () => {
+        video.onloadedmetadata = () => {
           video.play().then(() => {
             setStreamReady(true);
             (videoRef as any).current = video;
-          }).catch(e => setError("Klicken Sie zum Starten."));
+          }).catch(() => setError("Interaktion erforderlich."));
         };
       } catch (err: any) {
-        setError(`Kamera-Zugriff verweigert.`);
+        setError("Kein Kamerazugriff.");
       }
     }
     setupCamera();
@@ -73,13 +73,13 @@ const App: React.FC = () => {
         }));
         setObjects(mappedObjects);
       } catch (e) {
-        // Silent error to prevent loop crash
+        // Ignorieren für kontinuierlichen Loop
       }
     }
-    // RPi braucht mehr Luft zum Atmen, daher leicht verzögert
+    // Kurze Pause für CPU-Entlastung
     setTimeout(() => {
       requestRef.current = requestAnimationFrame(detectFrame);
-    }, 50); 
+    }, 60); 
   };
 
   useEffect(() => {
@@ -91,35 +91,39 @@ const App: React.FC = () => {
 
   return (
     <div className="relative w-full h-full font-mono text-white pointer-events-none">
-      <div className="relative z-30 w-full h-full flex flex-col p-6 pointer-events-none">
+      <div className="relative z-30 w-full h-full flex flex-col p-6">
         <header className="flex justify-between items-start pointer-events-auto">
-          <div className="flex gap-4 items-center">
-            <div className="bg-blue-600 p-2 rounded-lg shadow-lg">
+          <div className="flex gap-4 items-center bg-black/40 p-3 rounded-xl border border-white/10 backdrop-blur-md">
+            <div className="bg-blue-600 p-2 rounded-lg">
               <Cpu className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-black uppercase tracking-tighter text-white">Edge Projector</h1>
+              <h1 className="text-lg font-black uppercase tracking-tighter">AI Projector</h1>
               <div className="text-[9px] text-blue-400 font-bold flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                STABLE_MODE
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                SYSTEM_LIVE
               </div>
             </div>
           </div>
         </header>
 
         <div className="mt-auto pointer-events-none">
-          <div className="w-48 bg-black/80 border border-blue-500/20 p-3 rounded-lg backdrop-blur-sm pointer-events-auto">
+          <div className="w-48 bg-black/80 border border-blue-500/20 p-3 rounded-lg pointer-events-auto">
             <div className="text-[9px] text-blue-500 mb-2 flex items-center gap-2 border-b border-blue-500/10 pb-1">
               <Zap className="w-3 h-3" />
-              <span>SENSOR_LOG</span>
+              <span>LOG</span>
             </div>
             <div className="space-y-1">
-              {objects.slice(0, 3).map(obj => (
-                <div key={obj.id} className="flex justify-between items-center text-[9px] bg-blue-500/5 p-1 rounded">
-                  <span className="font-bold uppercase opacity-80">{obj.type}</span>
-                  <span className="text-blue-500">{Math.round(obj.confidence * 100)}%</span>
-                </div>
-              ))}
+              {objects.length > 0 ? (
+                objects.slice(0, 3).map(obj => (
+                  <div key={obj.id} className="flex justify-between items-center text-[9px] bg-blue-500/10 p-1 rounded">
+                    <span className="font-bold uppercase">{obj.type}</span>
+                    <span className="text-blue-500">{Math.round(obj.confidence * 100)}%</span>
+                  </div>
+                ))
+              ) : (
+                <div className="text-[9px] opacity-30 italic">Searching...</div>
+              )}
             </div>
           </div>
         </div>
@@ -127,10 +131,10 @@ const App: React.FC = () => {
 
       <P5Canvas objects={objects} videoElement={videoRef.current} isReady={streamReady} />
 
-      {isLoading && (
-        <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center p-6 pointer-events-auto">
+      {isLoading && !error && (
+        <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-6 pointer-events-auto">
           <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-4" />
-          <h2 className="text-sm font-bold tracking-widest opacity-50 uppercase">Booting Systems...</h2>
+          <h2 className="text-xs font-bold tracking-[0.2em] opacity-70 uppercase">Initialisierung</h2>
         </div>
       )}
 
@@ -138,7 +142,7 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-[110] bg-black/95 flex flex-col items-center justify-center p-6 pointer-events-auto">
           <AlertCircle className="w-10 h-10 text-red-500 mb-4" />
           <p className="text-[10px] text-red-400 font-bold uppercase tracking-widest">{error}</p>
-          <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 border border-white text-[10px] uppercase">Restart</button>
+          <button onClick={() => window.location.reload()} className="mt-6 px-6 py-2 border border-white/20 text-[10px] uppercase hover:bg-white hover:text-black transition-colors">System Neustart</button>
         </div>
       )}
     </div>

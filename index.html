@@ -10,12 +10,12 @@
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
     <style>
-        /* Grundlegendes Layout ohne komplexe Compositing-Eigenschaften */
         body, html { 
             margin: 0; 
             padding: 0;
             overflow: hidden; 
-            background-color: #000000;
+            /* Nutze fast-schwarz statt echtem schwarz, um Hardware-Keying-Probleme zu vermeiden */
+            background-color: #050505;
             width: 100vw; 
             height: 100vh; 
         }
@@ -27,9 +27,10 @@
             width: 100%;
             height: 100%;
             z-index: 1;
+            /* Zwingt Chromium zur Erstellung eines Composite Layers */
+            transform: translateZ(0);
         }
 
-        /* Das Video muss eine feste Ebene haben */
         video {
             position: absolute;
             top: 0;
@@ -38,8 +39,11 @@
             height: 100%;
             object-fit: cover;
             z-index: 2;
-            /* Spiegelung beibehalten, aber keine Filter oder Opacity */
             transform: scaleX(-1);
+            /* KRITISCH: Dieser Filter zwingt den RPi dazu, das Video NICHT als Hardware-Overlay 
+               zu rendern, sondern als Teil der Webseite. Das löst meist das Schwarz-Problem. */
+            filter: brightness(0.999);
+            opacity: 0.99;
         }
 
         #p5-container { 
@@ -48,18 +52,22 @@
             left: 0; 
             width: 100%; 
             height: 100%; 
-            z-index: 5; /* Höher als Video */
+            z-index: 5; 
             pointer-events: none;
+            /* Layer Promotion */
+            transform: translateZ(0);
         }
 
         #root { 
             position: absolute; 
             top: 0;
             left: 0;
-            z-index: 10; /* Höchste Ebene für UI */
+            z-index: 10;
             width: 100%; 
             height: 100%; 
             pointer-events: none;
+            /* Sorgt dafür, dass UI-Elemente einen eigenen Stacking Context haben */
+            opacity: 0.999;
         }
         
         #root > * { pointer-events: auto; }
