@@ -1,10 +1,11 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { RefreshCw, Activity, AlertCircle, Cpu, Zap } from 'lucide-react';
+import { RefreshCw, Cpu, Zap, AlertCircle } from 'lucide-react';
 import { DetectedObject, ObjectType } from './types';
 import P5Canvas from './components/P5Canvas';
 
 declare const cocoSsd: any;
+declare const tf: any;
 
 const App: React.FC = () => {
   const [objects, setObjects] = useState<DetectedObject[]>([]);
@@ -19,12 +20,18 @@ const App: React.FC = () => {
   useEffect(() => {
     async function initAI() {
       try {
+        // Auf dem RPi ist WebGL oft instabil. Wir versuchen CPU oder WASM (falls verfügbar).
+        // Standardmäßig nutzen wir CPU für absolute Stabilität, falls WebGL schwarz wird.
+        await tf.setBackend('cpu'); 
+        console.log("TFJS Backend:", tf.getBackend());
+
         const loadedModel = await cocoSsd.load({
           base: 'lite_mobilenet_v2'
         });
         setModel(loadedModel);
         setIsLoading(false);
       } catch (err) {
+        console.error(err);
         setError("AI Modell konnte nicht geladen werden.");
       }
     }
@@ -32,20 +39,22 @@ const App: React.FC = () => {
 
     async function setupCamera() {
       const video = document.getElementById('webcam') as HTMLVideoElement;
+      if (!video) return;
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'environment', width: 640, height: 480 } 
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, frameRate: 15 } // Niedrigere FPS für RPi Stabilität
         });
-        if (video) {
-          video.srcObject = stream;
-          video.onloadedmetadata = () => {
+        video.srcObject = stream;
+        
+        video.onloadeddata = () => {
+          video.play().then(() => {
             setStreamReady(true);
-            video.play();
-          };
-          (videoRef as any).current = video;
-        }
-      } catch (err) {
-        setError("Kamera-Fehler: Bitte Chromium-Berechtigungen prüfen.");
+            (videoRef as any).current = video;
+          }).catch(e => setError("Klicken Sie zum Starten."));
+        };
+      } catch (err: any) {
+        setError(`Kamera-Zugriff verweigert.`);
       }
     }
     setupCamera();
@@ -53,17 +62,24 @@ const App: React.FC = () => {
 
   const detectFrame = async () => {
     if (model && videoRef.current && videoRef.current.readyState >= 2) {
-      const predictions = await model.detect(videoRef.current);
-      const mappedObjects: DetectedObject[] = predictions.map((p: any, index: number) => ({
-        id: `local-${index}`,
-        type: p.class as ObjectType,
-        x: p.bbox[0] / videoRef.current!.videoWidth,
-        y: p.bbox[1] / videoRef.current!.videoHeight,
-        confidence: p.score
-      }));
-      setObjects(mappedObjects);
+      try {
+        const predictions = await model.detect(videoRef.current);
+        const mappedObjects: DetectedObject[] = predictions.map((p: any, index: number) => ({
+          id: `obj-${index}`,
+          type: p.class as ObjectType,
+          x: p.bbox[0] / videoRef.current!.videoWidth,
+          y: p.bbox[1] / videoRef.current!.videoHeight,
+          confidence: p.score
+        }));
+        setObjects(mappedObjects);
+      } catch (e) {
+        // Silent error to prevent loop crash
+      }
     }
-    requestRef.current = requestAnimationFrame(detectFrame);
+    // RPi braucht mehr Luft zum Atmen, daher leicht verzögert
+    setTimeout(() => {
+      requestRef.current = requestAnimationFrame(detectFrame);
+    }, 50); 
   };
 
   useEffect(() => {
@@ -74,40 +90,36 @@ const App: React.FC = () => {
   }, [model, streamReady]);
 
   return (
-    <div className="relative w-full h-full overflow-hidden font-mono text-white pointer-events-none">
-      <div className="relative z-20 w-full h-full flex flex-col p-6 pointer-events-none">
+    <div className="relative w-full h-full font-mono text-white pointer-events-none">
+      <div className="relative z-30 w-full h-full flex flex-col p-6 pointer-events-none">
         <header className="flex justify-between items-start pointer-events-auto">
           <div className="flex gap-4 items-center">
-            <div className="bg-blue-600 p-2 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.5)]">
-              <Cpu className="w-6 h-6 text-white" />
+            <div className="bg-blue-600 p-2 rounded-lg shadow-lg">
+              <Cpu className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-black uppercase tracking-tighter text-white">Edge Projector</h1>
-              <div className="text-[10px] text-blue-400 font-bold flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                CORE_ACTIVE_MIRRORED
+              <h1 className="text-lg font-black uppercase tracking-tighter text-white">Edge Projector</h1>
+              <div className="text-[9px] text-blue-400 font-bold flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                STABLE_MODE
               </div>
             </div>
           </div>
         </header>
 
-        <div className="mt-auto flex justify-between items-end pointer-events-none">
-          <div className="w-64 bg-black/80 border border-blue-500/30 p-4 rounded-xl backdrop-blur-md pointer-events-auto shadow-2xl">
-            <div className="text-[10px] text-blue-500 mb-3 flex items-center gap-2 border-b border-blue-500/20 pb-2">
+        <div className="mt-auto pointer-events-none">
+          <div className="w-48 bg-black/80 border border-blue-500/20 p-3 rounded-lg backdrop-blur-sm pointer-events-auto">
+            <div className="text-[9px] text-blue-500 mb-2 flex items-center gap-2 border-b border-blue-500/10 pb-1">
               <Zap className="w-3 h-3" />
-              <span>SENSORS_OUTPUT</span>
+              <span>SENSOR_LOG</span>
             </div>
-            <div className="space-y-1.5 max-h-40 overflow-y-auto">
-              {objects.length === 0 ? (
-                <div className="text-[10px] opacity-40 italic">Scanning table surface...</div>
-              ) : (
-                objects.map(obj => (
-                  <div key={obj.id} className="flex justify-between items-center text-[11px] bg-blue-500/10 p-2 rounded border border-blue-500/10">
-                    <span className="font-bold uppercase text-blue-100">{obj.type}</span>
-                    <span className="text-blue-400">{(obj.confidence * 100).toFixed(0)}%</span>
-                  </div>
-                ))
-              )}
+            <div className="space-y-1">
+              {objects.slice(0, 3).map(obj => (
+                <div key={obj.id} className="flex justify-between items-center text-[9px] bg-blue-500/5 p-1 rounded">
+                  <span className="font-bold uppercase opacity-80">{obj.type}</span>
+                  <span className="text-blue-500">{Math.round(obj.confidence * 100)}%</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -117,8 +129,16 @@ const App: React.FC = () => {
 
       {isLoading && (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center p-6 pointer-events-auto">
-          <RefreshCw className="w-12 h-12 text-blue-500 animate-spin mb-4" />
-          <h2 className="text-lg font-bold tracking-[0.3em]">INITIALIZING_AI</h2>
+          <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-4" />
+          <h2 className="text-sm font-bold tracking-widest opacity-50 uppercase">Booting Systems...</h2>
+        </div>
+      )}
+
+      {error && (
+        <div className="fixed inset-0 z-[110] bg-black/95 flex flex-col items-center justify-center p-6 pointer-events-auto">
+          <AlertCircle className="w-10 h-10 text-red-500 mb-4" />
+          <p className="text-[10px] text-red-400 font-bold uppercase tracking-widest">{error}</p>
+          <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 border border-white text-[10px] uppercase">Restart</button>
         </div>
       )}
     </div>

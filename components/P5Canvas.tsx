@@ -19,12 +19,12 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
   useEffect(() => {
     const sketch = (p: any) => {
       let particles: Particle[] = [];
-      const particleCount = 200;
+      const particleCount = 80; // Weniger Partikel für stabilere FPS auf RPi
 
       class Particle {
         x: number; y: number;
         prevX: number; prevY: number;
-        speed: number; hue: number;
+        speed: number;
         
         constructor() { this.init(); }
 
@@ -33,8 +33,7 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           this.y = p.random(p.height);
           this.prevX = this.x;
           this.prevY = this.y;
-          this.speed = p.random(3, 7);
-          this.hue = p.random(180, 230);
+          this.speed = p.random(2, 4);
         }
 
         update() {
@@ -45,21 +44,21 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           let vy = 0;
 
           objectsRef.current.forEach(obj => {
-            // Da das CSS alles spiegelt, nutzen wir hier die direkten 
-            // normalisierten Koordinaten (x: 0 ist links im Video)
-            const objX = obj.x * p.width;
+            // Da das Video per CSS gespiegelt ist, ist x=0 für TFJS links, 
+            // aber für den Nutzer rechts. (1-obj.x) korrigiert das.
+            const objX = (1 - obj.x) * p.width; 
             const objY = obj.y * p.height;
             
             const dx = this.x - objX;
             const dy = this.y - objY;
             const distance = p.sqrt(dx * dx + dy * dy);
-            const radius = 120;
+            const radius = 90;
 
             if (distance < radius) {
               const force = p.map(distance, 0, radius, 4, 0);
               const angle = p.atan2(dy, dx);
-              vx += p.cos(angle) * force * 3;
-              vy += p.sin(angle) * force * 8; // Stärkeres vertikales Ausweichen
+              vx += p.cos(angle) * force * 1.5;
+              vy += p.sin(angle) * force * 3;
             }
           });
 
@@ -79,50 +78,55 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
         }
 
         draw() {
-          p.stroke(this.hue, 90, 100, 0.6);
-          p.strokeWeight(2);
+          p.stroke(200, 80, 100, 0.4);
+          p.strokeWeight(1);
           p.line(this.prevX, this.prevY, this.x, this.y);
         }
       }
 
       p.setup = () => {
-        const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
+        // P2D Modus ist auf dem RPi meist stabiler als der Standardmodus
+        const canvas = p.createCanvas(p.windowWidth, p.windowHeight, p.P2D);
         canvas.parent('p5-container');
+        
+        // KRITISCH FÜR RPi: Deaktiviere Retina/HighDPI Skalierung
+        p.pixelDensity(1); 
+        
         p.colorMode(p.HSB, 360, 100, 100, 1);
         for (let i = 0; i < particleCount; i++) particles.push(new Particle());
       };
 
       p.draw = () => {
-        // Erhöhte Opazität für bessere Sichtbarkeit bei Projektion
-        p.background(0, 0, 0, 0.1); 
+        // Klare Strategie: p5 löscht den Hintergrund, das Video liegt darunter
+        p.clear(); 
+        
+        // Hintergrund mit leichter Transparenz für Trails
+        p.fill(0, 0, 0, 0.1);
+        p.noStroke();
+        p.rect(0, 0, p.width, p.height);
 
         particles.forEach(part => {
           part.update();
           part.draw();
         });
 
-        // UI-Overlays für getrackte Objekte
         objectsRef.current.forEach(obj => {
-          const objX = obj.x * p.width;
+          const objX = (1 - obj.x) * p.width;
           const objY = obj.y * p.height;
           
           p.push();
           p.translate(objX, objY);
-          
-          // Glühender Ring
           p.noFill();
-          p.stroke(200, 100, 100, 0.8);
-          p.strokeWeight(2);
-          const s = 60 + p.sin(p.frameCount * 0.1) * 5;
+          p.stroke(190, 100, 100, 0.7);
+          p.strokeWeight(1);
+          const s = 60 + p.sin(p.frameCount * 0.05) * 5;
           p.ellipse(0, 0, s, s);
           
-          // Label (Text muss zurück-gespiegelt werden, damit er lesbar ist!)
-          p.scale(-1, 1); // Text-Spiegelung korrigieren
-          p.fill(200, 100, 100, 0.9);
+          p.fill(190, 100, 100, 1);
           p.noStroke();
+          p.textSize(10);
           p.textAlign(p.CENTER);
-          p.textSize(12);
-          p.text(obj.type.toUpperCase(), 0, -s/2 - 10);
+          p.text(obj.type.toUpperCase(), 0, -s/2 - 5);
           p.pop();
         });
       };
