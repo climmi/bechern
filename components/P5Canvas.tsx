@@ -11,80 +11,104 @@ interface P5CanvasProps {
 const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement, isReady }) => {
   const p5Instance = useRef<any>(null);
   const objectsRef = useRef<DetectedObject[]>([]);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     objectsRef.current = objects;
-    videoRef.current = videoElement;
-  }, [objects, videoElement]);
+  }, [objects]);
 
   useEffect(() => {
+    // Wir warten explizit darauf, dass isReady true ist UND das Element im DOM ist
+    if (!isReady) return;
+
     const sketch = (p: any) => {
+      let flowLines: any[] = [];
+      const lineCount = 80; // Reduziert für RPi Performance
+
       p.setup = () => {
-        // P2D ist oft stabiler auf RPi als der Standard-Renderer bei Wayland
-        const canvas = p.createCanvas(p.windowWidth, p.windowHeight, p.P2D);
+        const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
         canvas.parent('p5-container');
+        p.colorMode(p.HSB, 360, 100, 100, 1);
         
-        // Optimierung für RPi: willReadFrequently im Context setzen (intern in p5)
-        const ctx = canvas.elt.getContext('2d', { willReadFrequently: true });
-        
-        p.pixelDensity(1); 
-        p.noSmooth(); // CPU-Schonung
-        p.frameRate(20);
+        for (let i = 0; i < lineCount; i++) {
+          flowLines.push({
+            x: p.random(p.width),
+            y: p.random(p.height),
+            px: 0,
+            py: 0,
+            speed: p.random(1, 3),
+            hue: p.random(180, 220)
+          });
+        }
+        p.clear();
       };
 
       p.draw = () => {
-        p.background(0); 
+        p.clear(); // Kritisch für Transparenz über dem Video
 
-        // Video-Feed zeichnen
-        if (videoRef.current && videoRef.current.readyState >= 2) {
-          p.push();
-          p.translate(p.width, 0);
-          p.scale(-1, 1);
-          p.image(videoRef.current, 0, 0, p.width, p.height);
-          p.pop();
+        flowLines.forEach(line => {
+          line.px = line.x;
+          line.py = line.y;
+
+          let angle = p.noise(line.x * 0.01, line.y * 0.01, p.frameCount * 0.01) * p.TWO_PI;
           
-          // HUD-Overlay-Effekt
-          p.fill(0, 0, 0, 100);
-          p.rect(0, 0, p.width, p.height);
-        }
+          objectsRef.current.forEach(obj => {
+            const objX = (1 - obj.x) * p.width;
+            const objY = obj.y * p.height;
+            const d = p.dist(line.x, line.y, objX, objY);
+            
+            if (d < 150) {
+              const avoidance = p.atan2(line.y - objY, line.x - objX);
+              angle = p.lerp(angle, avoidance, 0.2);
+              line.speed = p.lerp(line.speed, 6, 0.1);
+            } else {
+              line.speed = p.lerp(line.speed, 2, 0.05);
+            }
+          });
 
-        // Dekoration & Detektionen
-        p.strokeWeight(1);
-        p.noFill();
-        
+          line.x += p.cos(angle) * line.speed;
+          line.y += p.sin(angle) * line.speed;
+
+          if (line.x < 0 || line.x > p.width || line.y < 0 || line.y > p.height) {
+            line.x = p.random(p.width);
+            line.y = p.random(p.height);
+            line.px = line.x;
+            line.py = line.y;
+          }
+
+          p.stroke(line.hue, 80, 100, 0.7);
+          p.strokeWeight(2);
+          p.line(line.px, line.py, line.x, line.y);
+        });
+
+        // Debug-Overlay für AI
         objectsRef.current.forEach(obj => {
           const objX = (1 - obj.x) * p.width;
           const objY = obj.y * p.height;
-          
-          // Scanning Circle
-          p.stroke(0, 255, 255, 150);
-          p.ellipse(objX, objY, 60, 60);
-          
-          // Crosshair
-          p.line(objX - 40, objY, objX + 40, objY);
-          p.line(objX, objY - 40, objX, objY + 40);
-          
-          // Label
-          p.fill(0, 255, 255);
+          p.noFill();
+          p.stroke(0, 100, 100, 0.5);
+          p.circle(objX, objY, 80);
+          p.fill(255);
           p.noStroke();
           p.textSize(12);
-          p.text(obj.type.toUpperCase(), objX + 35, objY - 35);
-          p.text(`${Math.round(obj.confidence * 100)}%`, objX + 35, objY - 20);
+          p.text(obj.type.toUpperCase(), objX + 45, objY);
         });
-
-        // Ambient Scanning Lines
-        p.stroke(0, 255, 255, 30);
-        let scanY = (p.frameCount * 2) % p.height;
-        p.line(0, scanY, p.width, scanY);
       };
 
       p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
     };
 
-    p5Instance.current = new (window as any).p5(sketch);
-    return () => p5Instance.current?.remove();
-  }, []);
+    // Timeout um sicherzugehen, dass das DOM-Element bereit ist
+    const timeout = setTimeout(() => {
+      p5Instance.current = new (window as any).p5(sketch);
+    }, 100);
+
+    return () => {
+      clearTimeout(timeout);
+      if (p5Instance.current) {
+        p5Instance.current.remove();
+      }
+    };
+  }, [isReady]);
 
   return null;
 };
