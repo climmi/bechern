@@ -19,7 +19,7 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
   useEffect(() => {
     const sketch = (p: any) => {
       let particles: Particle[] = [];
-      const particleCount = 80; // Weniger Partikel für stabilere FPS auf RPi
+      const particleCount = 60; // Weiter reduziert für RPi Stabilität
 
       class Particle {
         x: number; y: number;
@@ -33,7 +33,7 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           this.y = p.random(p.height);
           this.prevX = this.x;
           this.prevY = this.y;
-          this.speed = p.random(2, 4);
+          this.speed = p.random(1.5, 3.5);
         }
 
         update() {
@@ -44,21 +44,20 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           let vy = 0;
 
           objectsRef.current.forEach(obj => {
-            // Da das Video per CSS gespiegelt ist, ist x=0 für TFJS links, 
-            // aber für den Nutzer rechts. (1-obj.x) korrigiert das.
+            // Video ist scaleX(-1), daher Korrektur der X-Achse
             const objX = (1 - obj.x) * p.width; 
             const objY = obj.y * p.height;
             
             const dx = this.x - objX;
             const dy = this.y - objY;
             const distance = p.sqrt(dx * dx + dy * dy);
-            const radius = 90;
+            const radius = 80;
 
             if (distance < radius) {
-              const force = p.map(distance, 0, radius, 4, 0);
+              const force = p.map(distance, 0, radius, 3, 0);
               const angle = p.atan2(dy, dx);
-              vx += p.cos(angle) * force * 1.5;
-              vy += p.sin(angle) * force * 3;
+              vx += p.cos(angle) * force;
+              vy += p.sin(angle) * force * 2;
             }
           });
 
@@ -71,40 +70,33 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
             this.y = p.random(p.height);
             this.prevY = this.y;
           }
-          if (this.y < 0 || this.y > p.height) {
-            this.init();
-            this.x = 0;
-          }
         }
 
         draw() {
-          p.stroke(200, 80, 100, 0.4);
-          p.strokeWeight(1);
+          p.stroke(180, 70, 100, 0.5);
+          p.strokeWeight(2);
           p.line(this.prevX, this.prevY, this.x, this.y);
         }
       }
 
       p.setup = () => {
-        // P2D Modus ist auf dem RPi meist stabiler als der Standardmodus
-        const canvas = p.createCanvas(p.windowWidth, p.windowHeight, p.P2D);
+        // Standard-Renderer (2D Canvas API) ist auf dem RPi oft stabiler
+        // als P2D (WebGL) wenn ein Video-Element darunter liegt.
+        const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
         canvas.parent('p5-container');
-        
-        // KRITISCH FÜR RPi: Deaktiviere Retina/HighDPI Skalierung
         p.pixelDensity(1); 
-        
         p.colorMode(p.HSB, 360, 100, 100, 1);
         for (let i = 0; i < particleCount; i++) particles.push(new Particle());
       };
 
       p.draw = () => {
-        // Klare Strategie: p5 löscht den Hintergrund, das Video liegt darunter
+        // p.clear() macht den Canvas transparent, damit das Video sichtbar bleibt
         p.clear(); 
         
-        // Hintergrund mit leichter Transparenz für Trails
-        p.fill(0, 0, 0, 0.1);
-        p.noStroke();
-        p.rect(0, 0, p.width, p.height);
-
+        // Da wir kein p.background() nutzen können (da es opacity nicht im clear-Sinne unterstützt),
+        // zeichnen wir die Partikel direkt. Falls "Trails" gewünscht sind, müssten wir
+        // einen zweiten Offscreen-Canvas nutzen, was den RPi aber überlastet.
+        
         particles.forEach(part => {
           part.update();
           part.draw();
@@ -117,16 +109,14 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           p.push();
           p.translate(objX, objY);
           p.noFill();
-          p.stroke(190, 100, 100, 0.7);
-          p.strokeWeight(1);
-          const s = 60 + p.sin(p.frameCount * 0.05) * 5;
-          p.ellipse(0, 0, s, s);
+          p.stroke(200, 100, 100, 0.8);
+          p.strokeWeight(2);
+          p.ellipse(0, 0, 60, 60);
           
-          p.fill(190, 100, 100, 1);
+          p.fill(200, 100, 100, 1);
           p.noStroke();
-          p.textSize(10);
-          p.textAlign(p.CENTER);
-          p.text(obj.type.toUpperCase(), 0, -s/2 - 5);
+          p.textSize(12);
+          p.text(obj.type.toUpperCase(), 10, -35);
           p.pop();
         });
       };
