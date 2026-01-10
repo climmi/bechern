@@ -20,7 +20,6 @@ const App: React.FC = () => {
   useEffect(() => {
     async function initAI() {
       try {
-        // CPU Backend ist am sichersten gegen Black-Screens auf RPi 4
         await tf.setBackend('cpu'); 
         const loadedModel = await cocoSsd.load({
           base: 'lite_mobilenet_v2'
@@ -34,7 +33,7 @@ const App: React.FC = () => {
     initAI();
 
     async function setupCamera() {
-      const video = document.getElementById('webcam') as HTMLVideoElement;
+      const video = document.getElementById('webcam-hidden') as HTMLVideoElement;
       if (!video) return;
 
       try {
@@ -51,10 +50,10 @@ const App: React.FC = () => {
           video.play().then(() => {
             setStreamReady(true);
             (videoRef as any).current = video;
-          }).catch(() => setError("Interaktion erforderlich."));
+          }).catch(() => setError("Bitte klicken zum Starten."));
         };
       } catch (err: any) {
-        setError("Kein Kamerazugriff.");
+        setError("Kamera-Fehler: " + err.message);
       }
     }
     setupCamera();
@@ -73,13 +72,12 @@ const App: React.FC = () => {
         }));
         setObjects(mappedObjects);
       } catch (e) {
-        // Ignorieren für kontinuierlichen Loop
+        // Silent catch
       }
     }
-    // Kurze Pause für CPU-Entlastung
     setTimeout(() => {
       requestRef.current = requestAnimationFrame(detectFrame);
-    }, 60); 
+    }, 100); // 10 FPS Ziel für RPi 4 Stabilität
   };
 
   useEffect(() => {
@@ -93,36 +91,36 @@ const App: React.FC = () => {
     <div className="relative w-full h-full font-mono text-white pointer-events-none">
       <div className="relative z-30 w-full h-full flex flex-col p-6">
         <header className="flex justify-between items-start pointer-events-auto">
-          <div className="flex gap-4 items-center bg-black/40 p-3 rounded-xl border border-white/10 backdrop-blur-md">
+          <div className="flex gap-4 items-center bg-black/60 p-3 rounded-xl border border-white/10 backdrop-blur-md">
             <div className="bg-blue-600 p-2 rounded-lg">
               <Cpu className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-black uppercase tracking-tighter">AI Projector</h1>
+              <h1 className="text-lg font-black uppercase tracking-tighter italic">RPi Vision</h1>
               <div className="text-[9px] text-blue-400 font-bold flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-                SYSTEM_LIVE
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                CORE_STABLE
               </div>
             </div>
           </div>
         </header>
 
         <div className="mt-auto pointer-events-none">
-          <div className="w-48 bg-black/80 border border-blue-500/20 p-3 rounded-lg pointer-events-auto">
+          <div className="w-48 bg-black/80 border border-blue-500/30 p-3 rounded-lg pointer-events-auto">
             <div className="text-[9px] text-blue-500 mb-2 flex items-center gap-2 border-b border-blue-500/10 pb-1">
               <Zap className="w-3 h-3" />
-              <span>LOG</span>
+              <span>DETECTION_LOG</span>
             </div>
             <div className="space-y-1">
               {objects.length > 0 ? (
                 objects.slice(0, 3).map(obj => (
                   <div key={obj.id} className="flex justify-between items-center text-[9px] bg-blue-500/10 p-1 rounded">
-                    <span className="font-bold uppercase">{obj.type}</span>
+                    <span className="font-bold uppercase tracking-widest">{obj.type}</span>
                     <span className="text-blue-500">{Math.round(obj.confidence * 100)}%</span>
                   </div>
                 ))
               ) : (
-                <div className="text-[9px] opacity-30 italic">Searching...</div>
+                <div className="text-[10px] opacity-30 italic animate-pulse">Scanning environment...</div>
               )}
             </div>
           </div>
@@ -133,16 +131,19 @@ const App: React.FC = () => {
 
       {isLoading && !error && (
         <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-6 pointer-events-auto">
-          <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-4" />
-          <h2 className="text-xs font-bold tracking-[0.2em] opacity-70 uppercase">Initialisierung</h2>
+          <div className="relative">
+            <RefreshCw className="w-12 h-12 text-blue-600 animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold">AI</div>
+          </div>
+          <h2 className="text-xs font-bold tracking-[0.3em] opacity-70 uppercase mt-4">System Start</h2>
         </div>
       )}
 
       {error && (
-        <div className="fixed inset-0 z-[110] bg-black/95 flex flex-col items-center justify-center p-6 pointer-events-auto">
-          <AlertCircle className="w-10 h-10 text-red-500 mb-4" />
-          <p className="text-[10px] text-red-400 font-bold uppercase tracking-widest">{error}</p>
-          <button onClick={() => window.location.reload()} className="mt-6 px-6 py-2 border border-white/20 text-[10px] uppercase hover:bg-white hover:text-black transition-colors">System Neustart</button>
+        <div className="fixed inset-0 z-[110] bg-black flex flex-col items-center justify-center p-6 pointer-events-auto text-center">
+          <AlertCircle className="w-12 h-12 text-red-600 mb-4" />
+          <p className="text-xs text-red-500 font-bold uppercase tracking-widest mb-2">{error}</p>
+          <button onClick={() => window.location.reload()} className="mt-8 px-8 py-3 bg-white text-black font-black text-xs uppercase hover:bg-blue-600 hover:text-white transition-all">Restart Engine</button>
         </div>
       )}
     </div>

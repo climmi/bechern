@@ -8,18 +8,20 @@ interface P5CanvasProps {
   isReady: boolean;
 }
 
-const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
+const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement, isReady }) => {
   const p5Instance = useRef<any>(null);
   const objectsRef = useRef<DetectedObject[]>([]);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     objectsRef.current = objects;
-  }, [objects]);
+    videoRef.current = videoElement;
+  }, [objects, videoElement]);
 
   useEffect(() => {
     const sketch = (p: any) => {
       let particles: Particle[] = [];
-      const particleCount = 60; // Weiter reduziert für RPi Stabilität
+      const particleCount = 40;
 
       class Particle {
         x: number; y: number;
@@ -33,55 +35,41 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           this.y = p.random(p.height);
           this.prevX = this.x;
           this.prevY = this.y;
-          this.speed = p.random(1.5, 3.5);
+          this.speed = p.random(1, 3);
         }
 
         update() {
           this.prevX = this.x;
           this.prevY = this.y;
-
           let vx = this.speed;
           let vy = 0;
 
           objectsRef.current.forEach(obj => {
-            // Video ist scaleX(-1), daher Korrektur der X-Achse
             const objX = (1 - obj.x) * p.width; 
             const objY = obj.y * p.height;
-            
             const dx = this.x - objX;
             const dy = this.y - objY;
             const distance = p.sqrt(dx * dx + dy * dy);
-            const radius = 80;
-
-            if (distance < radius) {
-              const force = p.map(distance, 0, radius, 3, 0);
+            if (distance < 100) {
               const angle = p.atan2(dy, dx);
-              vx += p.cos(angle) * force;
-              vy += p.sin(angle) * force * 2;
+              vx += p.cos(angle) * 4;
+              vy += p.sin(angle) * 4;
             }
           });
 
           this.x += vx;
           this.y += vy;
-
-          if (this.x > p.width) {
-            this.x = 0;
-            this.prevX = 0;
-            this.y = p.random(p.height);
-            this.prevY = this.y;
-          }
+          if (this.x > p.width) this.init();
         }
 
         draw() {
-          p.stroke(180, 70, 100, 0.5);
-          p.strokeWeight(2);
+          p.stroke(200, 100, 100, 0.4);
+          p.strokeWeight(1.5);
           p.line(this.prevX, this.prevY, this.x, this.y);
         }
       }
 
       p.setup = () => {
-        // Standard-Renderer (2D Canvas API) ist auf dem RPi oft stabiler
-        // als P2D (WebGL) wenn ein Video-Element darunter liegt.
         const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
         canvas.parent('p5-container');
         p.pixelDensity(1); 
@@ -90,13 +78,23 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
       };
 
       p.draw = () => {
-        // p.clear() macht den Canvas transparent, damit das Video sichtbar bleibt
-        p.clear(); 
-        
-        // Da wir kein p.background() nutzen können (da es opacity nicht im clear-Sinne unterstützt),
-        // zeichnen wir die Partikel direkt. Falls "Trails" gewünscht sind, müssten wir
-        // einen zweiten Offscreen-Canvas nutzen, was den RPi aber überlastet.
-        
+        p.background(5, 5, 5); // Fast schwarz
+
+        // KRITISCH: Zeichne das Video direkt in den p5-Canvas
+        // Das umgeht alle Overlay-Probleme des Browsers
+        if (videoRef.current && videoRef.current.readyState >= 2) {
+          p.push();
+          p.translate(p.width, 0);
+          p.scale(-1, 1); // Spiegeln
+          // Zeichne das Videobild
+          p.image(videoRef.current, 0, 0, p.width, p.height);
+          p.pop();
+          
+          // Verdunkle das Video etwas für bessere Sichtbarkeit der UI
+          p.fill(0, 0, 0, 0.4);
+          p.rect(0, 0, p.width, p.height);
+        }
+
         particles.forEach(part => {
           part.update();
           part.draw();
@@ -111,12 +109,13 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects }) => {
           p.noFill();
           p.stroke(200, 100, 100, 0.8);
           p.strokeWeight(2);
-          p.ellipse(0, 0, 60, 60);
+          p.ellipse(0, 0, 80, 80);
           
-          p.fill(200, 100, 100, 1);
+          p.fill(0, 0, 100, 1);
           p.noStroke();
-          p.textSize(12);
-          p.text(obj.type.toUpperCase(), 10, -35);
+          p.textSize(14);
+          p.textStyle(p.BOLD);
+          p.text(obj.type.toUpperCase(), 10, -45);
           p.pop();
         });
       };

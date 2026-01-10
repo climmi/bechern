@@ -14,48 +14,18 @@
             margin: 0; 
             padding: 0;
             overflow: hidden; 
-            /* Nutze fast-schwarz statt echtem schwarz, um Hardware-Keying-Probleme zu vermeiden */
             background-color: #050505;
             width: 100vw; 
             height: 100vh; 
         }
         
-        #viewport-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 1;
-            /* Zwingt Chromium zur Erstellung eines Composite Layers */
-            transform: translateZ(0);
-        }
-
-        video {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            z-index: 2;
-            transform: scaleX(-1);
-            /* KRITISCH: Dieser Filter zwingt den RPi dazu, das Video NICHT als Hardware-Overlay 
-               zu rendern, sondern als Teil der Webseite. Das löst meist das Schwarz-Problem. */
-            filter: brightness(0.999);
-            opacity: 0.99;
-        }
-
         #p5-container { 
             position: absolute; 
             top: 0; 
             left: 0; 
             width: 100%; 
             height: 100%; 
-            z-index: 5; 
-            pointer-events: none;
-            /* Layer Promotion */
-            transform: translateZ(0);
+            z-index: 1; 
         }
 
         #root { 
@@ -66,8 +36,6 @@
             width: 100%; 
             height: 100%; 
             pointer-events: none;
-            /* Sorgt dafür, dass UI-Elemente einen eigenen Stacking Context haben */
-            opacity: 0.999;
         }
         
         #root > * { pointer-events: auto; }
@@ -76,6 +44,15 @@
             display: block; 
             width: 100% !important; 
             height: 100% !important;
+        }
+
+        /* Verstecktes Video-Element für TFJS und p5 */
+        #webcam-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
         }
     </style>
 <script type="importmap">
@@ -90,10 +67,8 @@
 </script>
 </head>
 <body>
-    <div id="viewport-container">
-        <video id="webcam" playsinline muted autoplay></video>
-        <div id="p5-container"></div>
-    </div>
+    <video id="webcam-hidden" playsinline muted autoplay></video>
+    <div id="p5-container"></div>
     <div id="root"></div>
 </body>
 </html>
