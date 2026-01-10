@@ -1,9 +1,12 @@
 
 export enum ObjectType {
   CUP = 'cup',
-  COIN = 'coin',
-  PHONE = 'smartphone',
+  BOTTLE = 'bottle',
+  PERSON = 'person',
+  PHONE = 'cell phone',
   HAND = 'hand',
+  LAPTOP = 'laptop',
+  CHAIR = 'chair',
   UNKNOWN = 'unknown'
 }
 
@@ -13,8 +16,4 @@ export interface DetectedObject {
   x: number; // 0 to 1 normalized
   y: number; // 0 to 1 normalized
   confidence: number;
-}
-
-export interface AnimationState {
-  objects: DetectedObject[];
 }

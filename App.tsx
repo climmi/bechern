@@ -1,150 +1,178 @@
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { RefreshCw, Play, Pause, Terminal, Activity, AlertCircle } from 'lucide-react';
-import { detectObjectsFromFrame } from './services/geminiService';
-import { DetectedObject } from './types';
+import React, { useState, useRef, useEffect } from 'react';
+import { RefreshCw, Activity, AlertCircle, Cpu, Zap } from 'lucide-react';
+import { DetectedObject, ObjectType } from './types';
 import P5Canvas from './components/P5Canvas';
+
+// Zugriff auf die global geladenen TF-Skripte
+declare const cocoSsd: any;
 
 const App: React.FC = () => {
   const [objects, setObjects] = useState<DetectedObject[]>([]);
-  const [isTracking, setIsTracking] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [model, setModel] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [streamReady, setStreamReady] = useState(false);
   
-  // We still need a temporary canvas to grab frames for Gemini
-  const offscreenCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const requestRef = useRef<number>(null);
 
-  const captureAndDetect = useCallback(async () => {
-    if (!isTracking || isLoading) return;
-
-    // We try to grab the video element created by p5 (it's hidden in the DOM)
-    const p5Video = document.querySelector('video');
-    const canvas = offscreenCanvasRef.current;
-    
-    if (!p5Video || !canvas || p5Video.readyState < 2) return;
-
-    canvas.width = 480;
-    canvas.height = 360;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    try {
-      ctx.drawImage(p5Video, 0, 0, canvas.width, canvas.height);
-      const base64Image = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
-      
-      setIsLoading(true);
-      const results = await detectObjectsFromFrame(base64Image);
-      if (results) setObjects(results);
-    } catch (err) {
-      console.error("Gemini Scan Fehler:", err);
-    } finally {
-      setIsLoading(false);
+  // 1. Modell laden
+  useEffect(() => {
+    async function initAI() {
+      try {
+        const loadedModel = await cocoSsd.load({
+          base: 'lite_mobilenet_v2' // Optimiert für Raspberry Pi
+        });
+        setModel(loadedModel);
+        setIsLoading(false);
+      } catch (err) {
+        console.error("AI Modell Fehler:", err);
+        setError("AI Modell konnte nicht lokal geladen werden.");
+      }
     }
-  }, [isTracking, isLoading]);
+    initAI();
+  }, []);
+
+  // 2. Kamera Setup
+  useEffect(() => {
+    async function setupCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            facingMode: 'environment',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          } 
+        });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.onloadedmetadata = () => {
+            setStreamReady(true);
+            videoRef.current?.play();
+          };
+        }
+      } catch (err) {
+        setError("Kamera-Zugriff fehlgeschlagen. Prüfen Sie das Flachbandkabel.");
+      }
+    }
+    setupCamera();
+  }, []);
+
+  // 3. Echtzeit-Erkennungs Loop (Lokal auf CPU/GPU des RPi)
+  const detectFrame = async () => {
+    if (model && videoRef.current && videoRef.current.readyState >= 2) {
+      const predictions = await model.detect(videoRef.current);
+      
+      const mappedObjects: DetectedObject[] = predictions.map((p: any, index: number) => ({
+        id: `local-${index}-${p.class}`,
+        type: p.class as ObjectType,
+        // TF liefert Pixel-Koordinaten, wir normalisieren auf 0-1
+        x: p.bbox[0] / videoRef.current!.videoWidth,
+        y: p.bbox[1] / videoRef.current!.videoHeight,
+        confidence: p.score
+      }));
+
+      setObjects(mappedObjects);
+    }
+    requestRef.current = requestAnimationFrame(detectFrame);
+  };
 
   useEffect(() => {
-    let interval: number;
-    if (isTracking) {
-      interval = window.setInterval(captureAndDetect, 4000); // Scan every 4s
-      captureAndDetect();
+    if (model && streamReady) {
+      requestRef.current = requestAnimationFrame(detectFrame);
     }
     return () => {
-      if (interval) clearInterval(interval);
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [isTracking, captureAndDetect]);
+  }, [model, streamReady]);
 
   return (
-    <div className="relative w-full h-full bg-black">
-      {/* Background Layer (p5 handles its own camera setup) */}
-      <P5Canvas objects={objects} />
+    <div className="relative w-full h-full bg-black overflow-hidden font-mono text-white">
+      {/* Native Video Feed - Sichtbar für RPi Performance */}
+      <video 
+        ref={videoRef} 
+        className="absolute inset-0 w-full h-full object-cover z-0 grayscale opacity-30"
+        playsInline 
+        muted
+      />
+      
+      {/* p5 Overlay */}
+      <div className="absolute inset-0 z-10 pointer-events-none">
+        <P5Canvas objects={objects} videoElement={videoRef.current} isReady={streamReady} />
+      </div>
 
       {/* UI Overlay */}
-      <div className="relative z-10 w-full h-full flex flex-col pointer-events-none">
-        <header className="p-8 flex justify-between items-center bg-gradient-to-b from-black/90 to-transparent pointer-events-auto">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20">
-              <Activity className="w-6 h-6 text-white" />
+      <div className="relative z-20 w-full h-full flex flex-col pointer-events-none p-6">
+        <header className="flex justify-between items-start pointer-events-auto">
+          <div className="flex gap-4 items-center">
+            <div className="bg-blue-600 p-2 rounded-lg">
+              <Cpu className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-black italic uppercase tracking-tighter text-white font-sans">Neural Projector</h1>
-              <div className="text-[9px] font-mono text-blue-400 tracking-[0.4em]">SYSTEM_STABLE_v2.8</div>
+              <h1 className="text-xl font-black uppercase tracking-tighter">Edge Projector</h1>
+              <div className="text-[10px] text-blue-400 font-bold flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                LOCAL_SNN_PROCESSING_ACTIVE
+              </div>
             </div>
           </div>
 
-          <button 
-            onClick={() => setIsTracking(!isTracking)}
-            className={`flex items-center gap-4 px-10 py-5 rounded-2xl font-black transition-all border-2 pointer-events-auto ${
-              isTracking 
-                ? 'bg-red-500/10 border-red-500 text-red-500 shadow-lg shadow-red-500/10' 
-                : 'bg-blue-600 border-blue-600 text-white shadow-xl shadow-blue-900/40 hover:scale-105 active:scale-95'
-            }`}
-          >
-            {isTracking ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 fill-current" />}
-            <span className="tracking-widest uppercase">{isTracking ? 'Abort Session' : 'Initiate Scan'}</span>
-          </button>
+          <div className="bg-black/60 border border-blue-500/30 p-4 rounded-xl backdrop-blur-md">
+            <div className="text-[9px] text-blue-400 mb-2 uppercase tracking-widest">System_Health</div>
+            <div className="flex gap-6">
+              <div className="flex flex-col">
+                <span className="text-[8px] opacity-50 uppercase">Latency</span>
+                <span className="text-xs font-bold text-green-400">~15ms</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[8px] opacity-50 uppercase">Backend</span>
+                <span className="text-xs font-bold text-blue-400 uppercase">WASM_TFJS</span>
+              </div>
+            </div>
+          </div>
         </header>
 
-        <div className="flex-1 flex justify-between p-12 items-end">
-          {/* Data List */}
-          <div className="w-72 bg-black/80 border border-white/10 p-6 rounded-[2.5rem] backdrop-blur-3xl pointer-events-auto shadow-2xl">
-            <div className="flex items-center gap-2 mb-4 text-blue-500">
-              <Terminal className="w-4 h-4" />
-              <span className="text-[9px] font-black uppercase tracking-widest">Active_Entities</span>
+        <div className="mt-auto flex justify-between items-end">
+          <div className="w-64 bg-black/60 border border-white/10 p-4 rounded-xl backdrop-blur-xl pointer-events-auto">
+            <div className="text-[10px] text-blue-500 mb-3 flex items-center gap-2">
+              <Zap className="w-3 h-3" />
+              <span>LIVE_DETECTION_STREAM</span>
             </div>
-            <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
+            <div className="space-y-1.5">
               {objects.length === 0 ? (
-                <div className="text-[10px] text-slate-500 uppercase py-10 text-center border border-white/5 rounded-3xl italic">
-                  {isTracking ? 'Synchronizing Neural Link...' : 'Hardware Standby'}
-                </div>
+                <div className="text-[10px] opacity-20 italic">No patterns detected...</div>
               ) : (
                 objects.map(obj => (
-                  <div key={obj.id} className="flex justify-between items-center p-4 bg-white/5 rounded-2xl border-l-4 border-blue-500 hover:bg-white/10 transition-all">
-                    <span className="text-xs text-white uppercase font-bold tracking-tight">{obj.type}</span>
-                    <span className="text-[10px] text-blue-400 font-mono">{(obj.confidence * 100).toFixed(0)}%</span>
+                  <div key={obj.id} className="flex justify-between items-center text-[11px] bg-white/5 p-2 rounded">
+                    <span className="font-bold uppercase tracking-tighter">{obj.type}</span>
+                    <span className="text-blue-500">{(obj.confidence * 100).toFixed(0)}%</span>
                   </div>
                 ))
               )}
             </div>
           </div>
-
-          {/* Status Bar */}
-          <div className="p-8 bg-black/80 border border-white/10 rounded-[3rem] backdrop-blur-xl pointer-events-auto flex gap-8 shadow-2xl items-center">
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-3">
-                <div className={`w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]`} />
-                <span className="text-[10px] font-mono text-white/70 uppercase">Optic: Active</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className={`w-2 h-2 rounded-full ${isTracking ? 'bg-blue-500 shadow-[0_0_8px_#2563eb]' : 'bg-slate-700'}`} />
-                <span className="text-[10px] font-mono text-white/70 uppercase">Proc: {isTracking ? 'Running' : 'Idle'}</span>
-              </div>
-            </div>
-            {isLoading && (
-              <div className="border-l border-white/10 pl-8">
-                <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
-      <canvas ref={offscreenCanvasRef} className="hidden" />
-
-      {error && (
-        <div className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center p-8 backdrop-blur-xl">
-          <div className="bg-slate-900 border border-red-500 p-12 rounded-[3rem] text-center max-w-sm">
-            <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
-            <h2 className="text-2xl font-black uppercase mb-4 text-white">System Breach</h2>
-            <p className="text-sm text-slate-400 font-mono mb-8">{error}</p>
-            <button onClick={() => window.location.reload()} className="w-full py-5 bg-red-600 text-white rounded-2xl font-black uppercase">Force Reboot</button>
-          </div>
+      {isLoading && (
+        <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center p-6">
+          <RefreshCw className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+          <h2 className="text-lg font-bold tracking-[0.3em] uppercase">Loading Local AI</h2>
+          <p className="text-[10px] opacity-50 mt-2">OPTIMIZING FOR RASPBERRY PI HARDWARE...</p>
         </div>
       )}
 
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 3px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #2563eb; border-radius: 10px; }
-      `}</style>
+      {error && (
+        <div className="fixed inset-0 z-[101] bg-black flex items-center justify-center p-6 text-center">
+          <div className="border border-red-500 p-8 rounded-xl max-w-sm">
+            <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-lg font-bold uppercase text-red-500 mb-2">System Error</h2>
+            <p className="text-xs opacity-70 mb-6">{error}</p>
+            <button onClick={() => window.location.reload()} className="px-8 py-2 bg-red-600 text-white text-xs font-bold uppercase">Restart</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
