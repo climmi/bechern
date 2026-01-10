@@ -1,0 +1,7 @@
+{
+  "name": "Gemini AI Projector Table",
+  "description": "A reactive projection mapping dashboard using Gemini AI to track objects like cups, coins, phones, and hands, generating artistic p5.js-inspired visuals.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
