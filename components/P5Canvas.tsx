@@ -17,100 +17,105 @@ const P5Canvas: React.FC<P5CanvasProps> = ({ objects, videoElement, isReady }) =
   }, [objects]);
 
   useEffect(() => {
-    // Wir warten explizit darauf, dass isReady true ist UND das Element im DOM ist
     if (!isReady) return;
 
     const sketch = (p: any) => {
-      let flowLines: any[] = [];
-      const lineCount = 80; // Reduziert für RPi Performance
+      let particles: any[] = [];
+      const numParticles = 100;
 
       p.setup = () => {
         const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
         canvas.parent('p5-container');
         p.colorMode(p.HSB, 360, 100, 100, 1);
         
-        for (let i = 0; i < lineCount; i++) {
-          flowLines.push({
-            x: p.random(p.width),
-            y: p.random(p.height),
-            px: 0,
-            py: 0,
-            speed: p.random(1, 3),
-            hue: p.random(180, 220)
+        for (let i = 0; i < numParticles; i++) {
+          particles.push({
+            pos: p.createVector(p.random(p.width), p.random(p.height)),
+            vel: p.createVector(p.random(-1, 1), p.random(-1, 1)),
+            acc: p.createVector(0, 0),
+            maxSpeed: 3,
+            hue: p.random(180, 240)
           });
         }
-        p.clear();
       };
 
       p.draw = () => {
-        p.clear(); // Kritisch für Transparenz über dem Video
+        p.clear(); // Erhält Transparenz für das darunterliegende Video
 
-        flowLines.forEach(line => {
-          line.px = line.x;
-          line.py = line.y;
+        particles.forEach(pt => {
+          // Flow-Verhalten (Noise)
+          let angle = p.noise(pt.pos.x * 0.005, pt.pos.y * 0.005, p.frameCount * 0.01) * p.TWO_PI * 2;
+          /* Fix: Use (window as any).p5.Vector.fromAngle or p.constructor.Vector.fromAngle if global p5 is available, 
+             but typically in instance mode we use the instance's createVector or static calls on the library. 
+             Since p5 is a global variable from the script tag in this context: */
+          let steer = (window as any).p5.Vector.fromAngle(angle);
+          steer.setMag(0.1);
+          pt.acc.add(steer);
 
-          let angle = p.noise(line.x * 0.01, line.y * 0.01, p.frameCount * 0.01) * p.TWO_PI;
-          
+          // Reaktion auf Objekte
           objectsRef.current.forEach(obj => {
-            const objX = (1 - obj.x) * p.width;
+            const objX = obj.x * p.width;
             const objY = obj.y * p.height;
-            const d = p.dist(line.x, line.y, objX, objY);
+            const target = p.createVector(objX, objY);
             
-            if (d < 150) {
-              const avoidance = p.atan2(line.y - objY, line.x - objX);
-              angle = p.lerp(angle, avoidance, 0.2);
-              line.speed = p.lerp(line.speed, 6, 0.1);
+            /* Fix: Use the p5 global class for static Vector methods */
+            const dist = (window as any).p5.Vector.dist(pt.pos, target);
+            
+            if (dist < 150) {
+              /* Fix: Use the p5 global class for static Vector methods */
+              let diff = (window as any).p5.Vector.sub(pt.pos, target);
+              diff.normalize();
+              diff.mult(0.5);
+              pt.acc.add(diff);
+              pt.maxSpeed = 6;
             } else {
-              line.speed = p.lerp(line.speed, 2, 0.05);
+              pt.maxSpeed = 3;
             }
           });
 
-          line.x += p.cos(angle) * line.speed;
-          line.y += p.sin(angle) * line.speed;
+          pt.vel.add(pt.acc);
+          pt.vel.limit(pt.maxSpeed);
+          pt.pos.add(pt.vel);
+          pt.acc.mult(0);
 
-          if (line.x < 0 || line.x > p.width || line.y < 0 || line.y > p.height) {
-            line.x = p.random(p.width);
-            line.y = p.random(p.height);
-            line.px = line.x;
-            line.py = line.y;
-          }
+          // Screen Wrap
+          if (pt.pos.x < 0) pt.pos.x = p.width;
+          if (pt.pos.x > p.width) pt.pos.x = 0;
+          if (pt.pos.y < 0) pt.pos.y = p.height;
+          if (pt.pos.y > p.height) pt.pos.y = 0;
 
-          p.stroke(line.hue, 80, 100, 0.7);
-          p.strokeWeight(2);
-          p.line(line.px, line.py, line.x, line.y);
+          // Zeichnen
+          p.stroke(pt.hue, 80, 100, 0.8);
+          p.strokeWeight(3);
+          p.point(pt.pos.x, pt.pos.y);
         });
 
-        // Debug-Overlay für AI
+        // Debug Marker (Sichtbar machen, ob die AI überhaupt etwas sieht)
         objectsRef.current.forEach(obj => {
-          const objX = (1 - obj.x) * p.width;
+          const objX = obj.x * p.width;
           const objY = obj.y * p.height;
           p.noFill();
-          p.stroke(0, 100, 100, 0.5);
-          p.circle(objX, objY, 80);
-          p.fill(255);
+          p.stroke(45, 100, 100, 0.8); // Orange/Gelb
+          p.strokeWeight(2);
+          p.rectMode(p.CORNER);
+          p.circle(objX, objY, 60);
           p.noStroke();
-          p.textSize(12);
-          p.text(obj.type.toUpperCase(), objX + 45, objY);
+          p.fill(255);
+          p.textSize(16);
+          p.text(obj.type, objX + 35, objY);
         });
       };
 
       p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
     };
 
-    // Timeout um sicherzugehen, dass das DOM-Element bereit ist
-    const timeout = setTimeout(() => {
-      p5Instance.current = new (window as any).p5(sketch);
-    }, 100);
-
-    return () => {
-      clearTimeout(timeout);
-      if (p5Instance.current) {
-        p5Instance.current.remove();
-      }
-    };
+    const inst = new (window as any).p5(sketch);
+    p5Instance.current = inst;
+    
+    return () => inst.remove();
   }, [isReady]);
 
-  return null;
+  return <div id="p5-container" className="fixed inset-0 z-10 pointer-events-none" />;
 };
 
 export default P5Canvas;
